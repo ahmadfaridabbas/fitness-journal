@@ -10,6 +10,9 @@ const inter = Inter({ subsets: ["latin"] });
 const SITE_URL = "https://ahmadfaridfitness.netlify.app";
 
 export const metadata: Metadata = {
+  verification: {
+    google: "me9sOqa6BPetI9Rmm03LftkWyIziNRQENmI9tUFADq4",
+  },
   title: {
     default: "FitJournal - Personal Fitness Analytics & Running Tracker",
     template: "%s | FitJournal",
