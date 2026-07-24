@@ -3,7 +3,7 @@
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Settings, User, Database, RefreshCw, CheckCircle, Loader2 } from "lucide-react";
+import { Settings, User, Database, Upload, CheckCircle, Loader2, FileText, FolderOpen } from "lucide-react";
 import { mockUser } from "@/lib/mock-data";
 
 interface SyncStats {
@@ -22,13 +22,48 @@ export default function SettingsPage() {
   const [stats, setStats] = React.useState<SyncStats | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [lastSync, setLastSync] = React.useState<string | null>(null);
+  const [exportFile, setExportFile] = React.useState<File | null>(null);
+  const [gpxFiles, setGpxFiles] = React.useState<File[]>([]);
+
+  const handleExportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.name.endsWith(".xml")) {
+      setExportFile(file);
+      setError(null);
+    } else if (file) {
+      setError("Please select an XML file (export.xml).");
+    }
+  };
+
+  const handleGpxFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      const gpx = Array.from(files).filter((f) => f.name.endsWith(".gpx"));
+      setGpxFiles(gpx);
+      setError(null);
+    }
+  };
 
   const handleSync = async () => {
+    if (!exportFile) {
+      setError("Please select your export.xml file first.");
+      return;
+    }
+
     setSyncing(true);
     setError(null);
 
     try {
-      const res = await fetch("/api/import/sync", { method: "POST" });
+      const formData = new FormData();
+      formData.append("exportFile", exportFile);
+      gpxFiles.forEach((file) => {
+        formData.append("gpxFiles", file);
+      });
+
+      const res = await fetch("/api/import/sync", {
+        method: "POST",
+        body: formData,
+      });
       const data = await res.json();
 
       if (!res.ok) {
@@ -38,7 +73,7 @@ export default function SettingsPage() {
         setLastSync(new Date().toLocaleString());
       }
     } catch {
-      setError("Failed to connect. Make sure the dev server is running.");
+      setError("Failed to connect. Please try again.");
     } finally {
       setSyncing(false);
     }
@@ -92,12 +127,70 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Sync your Apple Health export data. Place your extracted export at:<br />
-            <code className="text-xs bg-muted px-2 py-1 rounded mt-1 inline-block">
-              /Users/ahmadfaridabbas/Documents/Fitness Project/Apple Health Export
-            </code>
+            Upload your Apple Health export to sync all workout data. Extract the ZIP from Apple Health, then upload the files below.
           </p>
 
+          {/* Export XML Upload */}
+          <div className="p-4 border rounded-lg space-y-3">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-muted-foreground" />
+              <p className="font-medium text-sm">Step 1: Select export.xml</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept=".xml"
+                  onChange={handleExportFileChange}
+                  className="hidden"
+                />
+                <span className="inline-flex items-center gap-2 px-4 py-2 border rounded-md text-sm hover:bg-muted transition-colors">
+                  <Upload className="h-4 w-4" />
+                  Choose File
+                </span>
+              </label>
+              {exportFile && (
+                <span className="text-sm text-green-600 flex items-center gap-1">
+                  <CheckCircle className="h-4 w-4" />
+                  {exportFile.name} ({(exportFile.size / (1024 * 1024)).toFixed(0)} MB)
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* GPX Files Upload */}
+          <div className="p-4 border rounded-lg space-y-3">
+            <div className="flex items-center gap-2">
+              <FolderOpen className="h-4 w-4 text-muted-foreground" />
+              <p className="font-medium text-sm">Step 2: Select GPX route files (optional)</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Select all .gpx files from the <code className="bg-muted px-1 rounded">workout-routes</code> folder for GPS data.
+            </p>
+            <div className="flex items-center gap-3">
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept=".gpx"
+                  multiple
+                  onChange={handleGpxFilesChange}
+                  className="hidden"
+                />
+                <span className="inline-flex items-center gap-2 px-4 py-2 border rounded-md text-sm hover:bg-muted transition-colors">
+                  <Upload className="h-4 w-4" />
+                  Choose GPX Files
+                </span>
+              </label>
+              {gpxFiles.length > 0 && (
+                <span className="text-sm text-green-600 flex items-center gap-1">
+                  <CheckCircle className="h-4 w-4" />
+                  {gpxFiles.length} GPX files selected
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Sync Button */}
           <div className="p-4 border rounded-lg space-y-3">
             <div className="flex items-center justify-between">
               <div>
@@ -106,7 +199,7 @@ export default function SettingsPage() {
                   Imports all workouts, heart rate, GPS routes, cadence, power, weather, stride, and more.
                 </p>
               </div>
-              <Button onClick={handleSync} disabled={syncing}>
+              <Button onClick={handleSync} disabled={syncing || !exportFile}>
                 {syncing ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -114,7 +207,7 @@ export default function SettingsPage() {
                   </>
                 ) : (
                   <>
-                    <RefreshCw className="h-4 w-4 mr-2" />
+                    <Upload className="h-4 w-4 mr-2" />
                     Sync Now
                   </>
                 )}
@@ -174,6 +267,15 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+
+          <div className="text-xs text-muted-foreground space-y-1">
+            <p className="font-medium">How to export from Apple Health:</p>
+            <p>1. Open the Health app on your iPhone</p>
+            <p>2. Tap your profile → Export All Health Data</p>
+            <p>3. Extract the ZIP file on your computer</p>
+            <p>4. Upload <strong>export.xml</strong> above</p>
+            <p>5. Optionally select all files from the <strong>workout-routes</strong> folder</p>
+          </div>
 
           <div className="text-xs text-muted-foreground space-y-1">
             <p className="font-medium">Data extracted per workout:</p>

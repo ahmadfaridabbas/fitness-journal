@@ -1,36 +1,44 @@
-import { NextResponse } from "next/server";
-import * as fs from "fs";
+import { NextRequest, NextResponse } from "next/server";
 import * as path from "path";
-import * as readline from "readline";
+import * as fs from "fs";
 
-const EXPORT_PATH = "/Users/ahmadfaridabbas/Documents/Fitness Project/Apple Health Export";
 const OUTPUT_FILE = path.join(process.cwd(), "lib", "data", "imported-runs.json");
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
-    // Verify export exists
-    if (!fs.existsSync(EXPORT_PATH)) {
+    const formData = await request.formData();
+    const exportFile = formData.get("exportFile") as File | null;
+    const gpxFiles = formData.getAll("gpxFiles") as File[];
+
+    if (!exportFile) {
       return NextResponse.json(
-        { error: "Apple Health export not found at expected location." },
-        { status: 404 }
+        { error: "No export.xml file provided. Please upload your Apple Health export." },
+        { status: 400 }
       );
     }
 
-    const exportXml = path.join(EXPORT_PATH, "export.xml");
-    const routesDir = path.join(EXPORT_PATH, "workout-routes");
-
-    if (!fs.existsSync(exportXml)) {
+    if (!exportFile.name.endsWith(".xml")) {
       return NextResponse.json(
-        { error: "export.xml not found in Apple Health export folder." },
-        { status: 404 }
+        { error: "Invalid file type. Please upload an XML file." },
+        { status: 400 }
+      );
+    }
+
+    // Read export.xml content
+    const exportXmlText = await exportFile.text();
+
+    if (!exportXmlText.includes("HealthData") && !exportXmlText.includes("Workout")) {
+      return NextResponse.json(
+        { error: "This does not appear to be an Apple Health export file." },
+        { status: 400 }
       );
     }
 
     // Step 1: Parse all workouts from export.xml
-    const workouts = await extractWorkouts(exportXml);
+    const workouts = extractWorkouts(exportXmlText);
 
-    // Step 2: Parse GPS routes from GPX files
-    const routes = parseAllGpxFiles(routesDir);
+    // Step 2: Parse GPS routes from uploaded GPX files
+    const routes = await parseUploadedGpxFiles(gpxFiles);
 
     // Step 3: Merge workouts with GPS data
     const merged = mergeWorkoutsWithRoutes(workouts, routes);
@@ -67,17 +75,16 @@ export async function POST() {
   }
 }
 
-// --- Extract workouts from export.xml ---
-async function extractWorkouts(filePath: string) {
+// --- Extract workouts from export.xml text ---
+function extractWorkouts(xmlText: string) {
   const workouts: any[] = [];
-  const fileStream = fs.createReadStream(filePath, { encoding: "utf-8" });
-  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  const lines = xmlText.split("\n");
 
   let inWorkout = false;
   let isRunning = false;
   let workoutLines: string[] = [];
 
-  for await (const line of rl) {
+  for (const line of lines) {
     if (line.includes("<Workout ") && (line.includes("Running") || line.includes("Walking") || line.includes("Hiking"))) {
       inWorkout = true;
       isRunning = true;
@@ -270,17 +277,13 @@ function extractAttr(xml: string, name: string): string | null {
   return match ? match[1] : null;
 }
 
-// --- Parse GPX files ---
-function parseAllGpxFiles(routesDir: string) {
+// --- Parse uploaded GPX files ---
+async function parseUploadedGpxFiles(gpxFiles: File[]) {
   const routeMap = new Map<string, any>();
-  if (!fs.existsSync(routesDir)) return routeMap;
 
-  const files = fs.readdirSync(routesDir).filter((f) => f.endsWith(".gpx"));
-
-  for (const file of files) {
+  for (const file of gpxFiles) {
     try {
-      const filePath = path.join(routesDir, file);
-      const xml = fs.readFileSync(filePath, "utf-8");
+      const xml = await file.text();
       const points: any[] = [];
 
       const trkptRegex = /<trkpt\s+lon="([^"]+)"\s+lat="([^"]+)"[^>]*>[\s\S]*?<ele>([^<]+)<\/ele>[\s\S]*?<time>([^<]+)<\/time>[\s\S]*?<speed>([^<]+)<\/speed>[\s\S]*?<\/trkpt>/g;
@@ -306,7 +309,8 @@ function parseAllGpxFiles(routesDir: string) {
         coordinates: simplified.map((p) => [p.lng, p.lat, p.elevation]),
       };
 
-      routeMap.set(`/workout-routes/${file}`, {
+      // Store with the filename as key (matches against route file references)
+      routeMap.set(`/workout-routes/${file.name}`, {
         routeData,
         pointCount: points.length,
       });
@@ -328,10 +332,23 @@ function mergeWorkoutsWithRoutes(workouts: any[], routes: Map<string, any>) {
     // Match route by file reference
     let routeData = null;
     let pointCount = 0;
-    if (workout.routeFile && routes.has(workout.routeFile)) {
-      const route = routes.get(workout.routeFile);
-      routeData = route.routeData;
-      pointCount = route.pointCount;
+    if (workout.routeFile) {
+      // Try exact match first
+      if (routes.has(workout.routeFile)) {
+        const route = routes.get(workout.routeFile);
+        routeData = route.routeData;
+        pointCount = route.pointCount;
+      } else {
+        // Try matching by filename only (uploaded files won't have full path)
+        const routeFileName = workout.routeFile.split("/").pop();
+        for (const [key, route] of routes.entries()) {
+          if (key.endsWith(routeFileName)) {
+            routeData = route.routeData;
+            pointCount = route.pointCount;
+            break;
+          }
+        }
+      }
     }
 
     return {
