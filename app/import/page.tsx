@@ -22,46 +22,65 @@ interface ImportedRun {
 interface ImportResult {
   success: boolean;
   imported: number;
+  routesAttached?: number;
+  gpxProvided?: number;
   runs: ImportedRun[];
   errors?: string[];
 }
 
 export default function ImportPage() {
-  const [file, setFile] = React.useState<File | null>(null);
+  const [files, setFiles] = React.useState<File[]>([]);
   const [dragOver, setDragOver] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [result, setResult] = React.useState<ImportResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
+  // Keep only the export.xml and any .gpx route files from a selection.
+  const collectRelevant = (list: FileList | File[]): File[] => {
+    const arr = Array.from(list);
+    return arr.filter(
+      (f) => f.name.endsWith(".xml") || f.name.toLowerCase().endsWith(".gpx")
+    );
+  };
+
+  const xmlFile = files.find((f) => f.name.endsWith(".xml")) || null;
+  const gpxCount = files.filter((f) => f.name.toLowerCase().endsWith(".gpx")).length;
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
-    const dropped = e.dataTransfer.files[0];
-    if (dropped && dropped.name.endsWith(".xml")) {
-      setFile(dropped);
+    const relevant = collectRelevant(e.dataTransfer.files);
+    if (relevant.some((f) => f.name.endsWith(".xml"))) {
+      setFiles(relevant);
       setError(null);
     } else {
-      setError("Please drop an XML file.");
+      setError("Please include your export.xml (you can also drop the workout-routes .gpx files).");
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = e.target.files?.[0];
-    if (selected) {
-      setFile(selected);
-      setError(null);
+    if (!e.target.files || e.target.files.length === 0) return;
+    const relevant = collectRelevant(e.target.files);
+    if (relevant.length === 0) {
+      setError("No export.xml or .gpx files found in that selection.");
+      return;
     }
+    setFiles(relevant);
+    setError(null);
   };
 
   const handleUpload = async () => {
-    if (!file) return;
+    if (!xmlFile) return;
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
       const formData = new FormData();
-      formData.append("file", file);
+      formData.append("file", xmlFile);
+      for (const f of files) {
+        if (f !== xmlFile) formData.append("files", f);
+      }
 
       const response = await fetch("/api/import/apple-health", {
         method: "POST",
@@ -105,7 +124,8 @@ export default function ImportPage() {
           Import from Apple Health
         </h1>
         <p className="text-muted-foreground mt-1">
-          Upload your Apple Health export.xml to import all your running data automatically.
+          Upload your Apple Health <strong>export.xml</strong> — and optionally the{" "}
+          <strong>workout-routes</strong> folder — to import your runs and GPS maps.
         </p>
       </div>
 
@@ -119,7 +139,11 @@ export default function ImportPage() {
           <p>2. Tap your profile picture in the top right</p>
           <p>3. Scroll down and tap <strong>Export All Health Data</strong></p>
           <p>4. Wait for the export to complete and save the ZIP file</p>
-          <p>5. Extract the ZIP and upload the <strong>export.xml</strong> file below</p>
+          <p>5. Extract the ZIP. It contains <strong>export.xml</strong> and a{" "}
+            <strong>workout-routes</strong> folder of <strong>.gpx</strong> files.</p>
+          <p>6. Use <strong>Select folder</strong> below and pick the whole{" "}
+            <strong>apple_health_export</strong> folder to import runs <em>and</em> GPS routes.
+            (Or just pick the export.xml to import runs without maps.)</p>
         </CardContent>
       </Card>
 
@@ -127,10 +151,10 @@ export default function ImportPage() {
       <Card>
         <CardContent className="p-6">
           <div
-            className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+            className={`relative border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
               dragOver
                 ? "border-primary bg-primary/5"
-                : file
+                : xmlFile
                 ? "border-green-500 bg-green-500/5"
                 : "border-muted-foreground/25 hover:border-muted-foreground/50"
             }`}
@@ -138,28 +162,51 @@ export default function ImportPage() {
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
           >
-            {file ? (
+            {xmlFile ? (
               <div className="space-y-2">
                 <FileText className="h-12 w-12 mx-auto text-green-500" />
-                <p className="font-medium">{file.name}</p>
+                <p className="font-medium">{xmlFile.name}</p>
                 <p className="text-sm text-muted-foreground">
-                  {(file.size / (1024 * 1024)).toFixed(1)} MB
+                  {(xmlFile.size / (1024 * 1024)).toFixed(1)} MB
+                  {gpxCount > 0 && (
+                    <> · {gpxCount} GPS route{gpxCount === 1 ? "" : "s"} (.gpx)</>
+                  )}
                 </p>
               </div>
             ) : (
               <div className="space-y-2">
                 <Upload className="h-12 w-12 mx-auto text-muted-foreground" />
-                <p className="font-medium">Drop your export.xml here</p>
-                <p className="text-sm text-muted-foreground">or click to browse</p>
+                <p className="font-medium">Drop your export.xml (or export folder) here</p>
+                <p className="text-sm text-muted-foreground">or use the buttons below</p>
               </div>
             )}
-            <input
-              type="file"
-              accept=".xml"
-              onChange={handleFileChange}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              style={{ position: "absolute" }}
-            />
+          </div>
+
+          {/* File / folder pickers */}
+          <div className="mt-4 flex flex-wrap gap-3">
+            <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm font-medium cursor-pointer hover:bg-accent">
+              <FileText className="h-4 w-4" />
+              Select export.xml
+              <input
+                type="file"
+                accept=".xml"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </label>
+            <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm font-medium cursor-pointer hover:bg-accent">
+              <Upload className="h-4 w-4" />
+              Select folder (with routes)
+              <input
+                type="file"
+                // @ts-expect-error non-standard but widely supported directory upload
+                webkitdirectory=""
+                directory=""
+                multiple
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </label>
           </div>
 
           {/* Error */}
@@ -172,7 +219,7 @@ export default function ImportPage() {
 
           {/* Upload Button */}
           <div className="mt-4 flex justify-end">
-            <Button onClick={handleUpload} disabled={!file || loading}>
+            <Button onClick={handleUpload} disabled={!xmlFile || loading}>
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -197,6 +244,14 @@ export default function ImportPage() {
               <CheckCircle className="h-5 w-5 text-green-500" />
               Successfully imported {result.imported} runs
             </CardTitle>
+            {typeof result.routesAttached === "number" && (result.gpxProvided ?? 0) > 0 && (
+              <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1">
+                <MapPin className="h-3 w-3 text-green-500" />
+                Attached {result.routesAttached} GPS route
+                {result.routesAttached === 1 ? "" : "s"} from {result.gpxProvided} .gpx file
+                {result.gpxProvided === 1 ? "" : "s"}
+              </p>
+            )}
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
