@@ -4,6 +4,12 @@ import * as fs from "fs";
 
 const OUTPUT_FILE = path.join(process.cwd(), "lib", "data", "imported-runs.json");
 
+// Apple Health exports can be very large (hundreds of MB). Run on Node.js and
+// allow a long processing window.
+export const runtime = "nodejs";
+export const maxDuration = 300; // seconds
+export const dynamic = "force-dynamic";
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -24,18 +30,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Read export.xml content
-    const exportXmlText = await exportFile.text();
+    // Step 1: Stream export.xml and parse workouts incrementally.
+    // NOTE: we intentionally do NOT call exportFile.text() — for large exports
+    // that exceeds V8's ~512MB max string length and throws ERR_STRING_TOO_LONG
+    // (which the UI shows as "Failed to connect"). Streaming keeps memory bounded.
+    const workouts = await extractWorkoutsFromStream(exportFile.stream());
 
-    if (!exportXmlText.includes("HealthData") && !exportXmlText.includes("Workout")) {
+    if (workouts.length === 0) {
       return NextResponse.json(
-        { error: "This does not appear to be an Apple Health export file." },
-        { status: 400 }
+        {
+          error:
+            "No running workouts found. Make sure this is an Apple Health export.xml.",
+        },
+        { status: 404 }
       );
     }
-
-    // Step 1: Parse all workouts from export.xml
-    const workouts = extractWorkouts(exportXmlText);
 
     // Step 2: Parse GPS routes from uploaded GPX files
     const routes = await parseUploadedGpxFiles(gpxFiles);
@@ -75,38 +84,90 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// --- Extract workouts from export.xml text ---
-function extractWorkouts(xmlText: string) {
+// --- Stream export.xml and extract running/walking/hiking workouts ---
+// Decodes the stream in bounded byte windows and pulls out complete
+// <Workout>...</Workout> elements as they arrive, so the whole file is never
+// held in one string.
+async function extractWorkoutsFromStream(
+  stream: ReadableStream<Uint8Array>
+): Promise<any[]> {
   const workouts: any[] = [];
-  const lines = xmlText.split("\n");
+  const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+  const reader = stream.getReader();
 
-  let inWorkout = false;
-  let isRunning = false;
-  let workoutLines: string[] = [];
+  let buffer = "";
+  const WINDOW = 8 * 1024 * 1024; // 8 MB per decode
+  const MAX_BUFFER = 64 * 1024 * 1024; // 64 MB safety cap
+  const workoutOpen = /<Workout\s/;
 
-  for (const line of lines) {
-    if (line.includes("<Workout ") && (line.includes("Running") || line.includes("Walking") || line.includes("Hiking"))) {
-      inWorkout = true;
-      isRunning = true;
-      workoutLines = [line];
-    } else if (line.includes("<Workout ")) {
-      inWorkout = true;
-      isRunning = false;
-    } else if (inWorkout && isRunning) {
-      workoutLines.push(line);
-      if (line.includes("</Workout>")) {
-        const workout = parseWorkoutXml(workoutLines.join("\n"));
+  const processBuffer = () => {
+    while (true) {
+      const openMatch = workoutOpen.exec(buffer);
+      if (!openMatch) {
+        if (buffer.length > 16) buffer = buffer.slice(-16);
+        return;
+      }
+      const openIdx = openMatch.index;
+      const openTagEnd = buffer.indexOf(">", openIdx);
+      if (openTagEnd === -1) {
+        buffer = buffer.slice(openIdx);
+        return;
+      }
+      const isSelfClosing = buffer[openTagEnd - 1] === "/";
+
+      let elementEnd: number;
+      if (isSelfClosing) {
+        elementEnd = openTagEnd + 1;
+      } else {
+        const closeIdx = buffer.indexOf("</Workout>", openTagEnd);
+        if (closeIdx === -1) {
+          buffer = buffer.slice(openIdx);
+          return;
+        }
+        elementEnd = closeIdx + "</Workout>".length;
+      }
+
+      const element = buffer.slice(openIdx, elementEnd);
+      buffer = buffer.slice(elementEnd);
+
+      // Only running-type workouts, matching the original filter.
+      if (
+        element.includes("Running") ||
+        element.includes("Walking") ||
+        element.includes("Hiking")
+      ) {
+        const workout = parseWorkoutXml(element);
         if (workout && workout.distance > 0.1) {
           workouts.push(workout);
         }
-        inWorkout = false;
-        isRunning = false;
-        workoutLines = [];
       }
-    } else if (inWorkout && line.includes("</Workout>")) {
-      inWorkout = false;
-      workoutLines = [];
     }
+  };
+
+  const feed = (bytes: Uint8Array) => {
+    for (let off = 0; off < bytes.length; off += WINDOW) {
+      const window = bytes.subarray(off, Math.min(off + WINDOW, bytes.length));
+      buffer += decoder.decode(window, { stream: true });
+      processBuffer();
+      if (buffer.length > MAX_BUFFER) {
+        throw new Error("Oversized element without a closing tag (malformed XML?).");
+      }
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const bytes =
+        value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBufferLike);
+      feed(bytes);
+    }
+    buffer += decoder.decode();
+    processBuffer();
+  } finally {
+    reader.releaseLock();
   }
 
   return workouts;
