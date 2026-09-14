@@ -12,6 +12,8 @@ import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
 
+interface ExistingRun {date:string;startTime?:string;distance:number;routeData:{type:string;coordinates:number[][]}|null;}
+
 interface WorkoutData {
   startDate: string;
   endDate: string;
@@ -53,8 +55,8 @@ async function main() {
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(merged, null, 2));
   console.log(`\n✨ Done! Output: ${OUTPUT_FILE}`);
   console.log(`   Total runs: ${merged.length}`);
-  console.log(`   With HR data: ${merged.filter((r: any) => r.avgHeartRate).length}`);
-  console.log(`   With routes: ${merged.filter((r: any) => r.routeData).length}`);
+  console.log(`   With HR data: ${merged.filter((r) => r.avgHeartRate).length}`);
+  console.log(`   With routes: ${merged.filter((r) => r.routeData).length}`);
 }
 
 async function extractWorkouts(): Promise<WorkoutData[]> {
@@ -216,15 +218,15 @@ function extractAttr(xml: string, name: string): string | null {
   return match ? match[1] : null;
 }
 
-function mergeData(workouts: WorkoutData[], existingRuns: any[]): any[] {
+function mergeData(workouts: WorkoutData[], existingRuns: ExistingRun[]) {
   // Create a map of existing runs by date for matching
-  const runsByDate = new Map<string, any>();
+  const runsByDate = new Map<string, ExistingRun>();
   for (const run of existingRuns) {
     const key = run.startTime ? run.startTime.substring(0, 16) : run.date;
     runsByDate.set(key, run);
   }
 
-  const merged: any[] = [];
+  const merged = [];
 
   for (const workout of workouts) {
     // Parse the startDate (format: "2026-04-03 17:08:15 +0500")
@@ -233,7 +235,7 @@ function mergeData(workouts: WorkoutData[], existingRuns: any[]): any[] {
     const startIso = parsedStart.toISOString();
 
     // Try to find matching GPS run (within 5 min window)
-    let matchedRoute: any = null;
+    let matchedRoute: ExistingRun["routeData"] = null;
     let matchedKey: string | null = null;
     runsByDate.forEach((run, key) => {
       if (matchedRoute) return;
@@ -282,7 +284,7 @@ function mergeData(workouts: WorkoutData[], existingRuns: any[]): any[] {
       weather: workout.weather,
       effortScore: workout.effortScore,
       routeData: matchedRoute,
-      pointCount: matchedRoute ? matchedRoute.coordinates.length : 0,
+      pointCount: (matchedRoute as ExistingRun["routeData"])?.coordinates.length ?? 0,
     });
   }
 

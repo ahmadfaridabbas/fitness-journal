@@ -11,7 +11,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { X } from "lucide-react";
 
 interface DetailField {
   label: string;
@@ -25,7 +24,10 @@ interface DetailSliderProps {
   title: string;
   subtitle?: string;
   fields: DetailField[];
-  badges?: { label: string; variant?: "default" | "secondary" | "success" | "warning" | "destructive" }[];
+  badges?: {
+    label: string;
+    variant?: "default" | "secondary" | "success" | "warning" | "destructive";
+  }[];
   footer?: React.ReactNode;
   children?: React.ReactNode;
 }
@@ -45,9 +47,7 @@ export function DetailSlider({
       <SheetContent side="right" className="w-full sm:max-w-lg p-0">
         <SheetHeader className="p-6 pb-4">
           <SheetTitle className="text-xl">{title}</SheetTitle>
-          {subtitle && (
-            <SheetDescription>{subtitle}</SheetDescription>
-          )}
+          {subtitle && <SheetDescription>{subtitle}</SheetDescription>}
           {badges && badges.length > 0 && (
             <div className="flex flex-wrap gap-2 mt-2">
               {badges.map((badge, i) => (
@@ -62,7 +62,10 @@ export function DetailSlider({
         <ScrollArea className="h-[calc(100vh-140px)]">
           <div className="p-6 space-y-4">
             {fields.map((field, index) => (
-              <div key={index} className="flex items-start justify-between py-2">
+              <div
+                key={index}
+                className="flex items-start justify-between py-2"
+              >
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   {field.icon}
                   <span>{field.label}</span>

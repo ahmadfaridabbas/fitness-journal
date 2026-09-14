@@ -1,35 +1,42 @@
 "use client";
 
 import React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DetailSlider } from "@/components/shared/detail-slider";
-import { allRuns as mockRuns } from "@/lib/mock-data";
+import { useFitness } from "@/components/fitness/provider";
+import { Workout, displayDate } from "@/lib/fitness";
+import { PageHeader, Empty } from "@/components/fitness/ui";
 import { formatPace } from "@/lib/utils";
-import { Map, MapPin, Route } from "lucide-react";
 import { RouteMap } from "@/components/maps/route-map";
 
 export default function MapsPage() {
-  const [selectedRun, setSelectedRun] = React.useState<typeof mockRuns[0] | null>(null);
+  const { workouts: mockRuns } = useFitness();
+  const [selectedRun, setSelectedRun] = React.useState<Workout | null>(null);
 
   // Filter runs that have route data
   const runsWithRoutes = mockRuns.filter(
-    (r) => r.routeData && r.routeData.coordinates && r.routeData.coordinates.length > 2
+    (r) =>
+      r.routeData &&
+      r.routeData.coordinates &&
+      r.routeData.coordinates.length > 2,
   );
 
   const totalDistance = runsWithRoutes.reduce((s, r) => s + r.distance, 0);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-          <Map className="h-8 w-8 text-primary" />
-          Maps & Routes
-        </h1>
-        <p className="text-muted-foreground mt-1">
-          {runsWithRoutes.length} routes from your Apple Health data • {totalDistance.toFixed(0)} km total
-        </p>
-      </div>
+    <div className="fitness-page">
+      <PageHeader
+        title="A record of where you’ve been"
+        description="Explore the GPS routes attached to your workouts."
+        eyebrow="EXPLORE / ROUTES"
+      />
+      {!runsWithRoutes.length && (
+        <Empty
+          title="No GPS routes yet"
+          description="Import GPX route files with your Apple Health workouts to see them here."
+        />
+      )}
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-3">
@@ -48,7 +55,13 @@ export default function MapsPage() {
         <Card>
           <CardContent className="p-4 text-center">
             <p className="text-xs text-muted-foreground">Avg per Run</p>
-            <p className="text-2xl font-bold">{(totalDistance / runsWithRoutes.length).toFixed(1)} km</p>
+            <p className="text-2xl font-bold">
+              {(runsWithRoutes.length
+                ? totalDistance / runsWithRoutes.length
+                : 0
+              ).toFixed(1)}{" "}
+              km
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -61,6 +74,15 @@ export default function MapsPage() {
             <Card
               key={run.id}
               className="hover:shadow-md transition-shadow cursor-pointer"
+              role="button"
+              tabIndex={0}
+              aria-label={`View route for ${displayDate(run.date)}`}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelectedRun(run);
+                }
+              }}
               onClick={() => setSelectedRun(run)}
             >
               <CardContent className="p-4">
@@ -74,12 +96,16 @@ export default function MapsPage() {
                   <div>
                     <p className="font-medium text-sm">{run.distance} km</p>
                     <p className="text-xs text-muted-foreground">
-                      {new Date(run.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                      {displayDate(run.date)}
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-medium">{formatPace(run.pace)}</p>
-                    <Badge variant="outline" className="text-xs">{run.trainingLoad}</Badge>
+                    <p className="text-sm font-medium">
+                      {formatPace(run.pace)}
+                    </p>
+                    <Badge variant="outline" className="text-xs">
+                      {run.trainingLoad}
+                    </Badge>
                   </div>
                 </div>
               </CardContent>
@@ -94,7 +120,7 @@ export default function MapsPage() {
           open={!!selectedRun}
           onOpenChange={(open) => !open && setSelectedRun(null)}
           title={`${selectedRun.distance} km Run`}
-          subtitle={new Date(selectedRun.date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+          subtitle={displayDate(selectedRun.date)}
           badges={[
             { label: `${selectedRun.distance} km` },
             { label: formatPace(selectedRun.pace) },

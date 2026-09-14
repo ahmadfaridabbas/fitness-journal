@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as path from "path";
-import * as fs from "fs";
+import { parseGpx } from "@/lib/apple-health/parser";
+type ParsedWorkout = NonNullable<ReturnType<typeof parseWorkoutXml>>;
+type RouteRecord = {
+  routeData: { type: string; coordinates: number[][] };
+  pointCount: number;
+};
+type Zone = { min: number | null; max: number | null; duration: number };
 
-const OUTPUT_FILE = path.join(process.cwd(), "lib", "data", "imported-runs.json");
+// Apple Health exports can be very large (hundreds of MB). Run on Node.js and
+// allow a long processing window.
+export const runtime = "nodejs";
+export const maxDuration = 300; // seconds
+export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,30 +21,36 @@ export async function POST(request: NextRequest) {
 
     if (!exportFile) {
       return NextResponse.json(
-        { error: "No export.xml file provided. Please upload your Apple Health export." },
-        { status: 400 }
+        {
+          error:
+            "No export.xml file provided. Please upload your Apple Health export.",
+        },
+        { status: 400 },
       );
     }
 
     if (!exportFile.name.endsWith(".xml")) {
       return NextResponse.json(
         { error: "Invalid file type. Please upload an XML file." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    // Read export.xml content
-    const exportXmlText = await exportFile.text();
+    // Step 1: Stream export.xml and parse workouts incrementally.
+    // NOTE: we intentionally do NOT call exportFile.text() — for large exports
+    // that exceeds V8's ~512MB max string length and throws ERR_STRING_TOO_LONG
+    // (which the UI shows as "Failed to connect"). Streaming keeps memory bounded.
+    const workouts = await extractWorkoutsFromStream(exportFile.stream());
 
-    if (!exportXmlText.includes("HealthData") && !exportXmlText.includes("Workout")) {
+    if (workouts.length === 0) {
       return NextResponse.json(
-        { error: "This does not appear to be an Apple Health export file." },
-        { status: 400 }
+        {
+          error:
+            "No running workouts found. Make sure this is an Apple Health export.xml.",
+        },
+        { status: 404 },
       );
     }
-
-    // Step 1: Parse all workouts from export.xml
-    const workouts = extractWorkouts(exportXmlText);
 
     // Step 2: Parse GPS routes from uploaded GPX files
     const routes = await parseUploadedGpxFiles(gpxFiles);
@@ -43,70 +58,126 @@ export async function POST(request: NextRequest) {
     // Step 3: Merge workouts with GPS data
     const merged = mergeWorkoutsWithRoutes(workouts, routes);
 
-    // Step 4: Write to data file
-    const outputDir = path.dirname(OUTPUT_FILE);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(merged, null, 2));
-
     // Summary stats
     const stats = {
       totalRuns: merged.length,
-      withHeartRate: merged.filter((r: any) => r.avgHeartRate).length,
-      withRoutes: merged.filter((r: any) => r.routeData).length,
-      withWeather: merged.filter((r: any) => r.weather).length,
-      withCadence: merged.filter((r: any) => r.cadence).length,
-      withPower: merged.filter((r: any) => r.power).length,
-      totalDistance: Math.round(merged.reduce((s: number, r: any) => s + r.distance, 0) * 10) / 10,
+      withHeartRate: merged.filter((r) => r.avgHeartRate).length,
+      withRoutes: merged.filter((r) => r.routeData).length,
+      withWeather: merged.filter((r) => r.weather).length,
+      withCadence: merged.filter((r) => r.cadence).length,
+      withPower: merged.filter((r) => r.avgPower).length,
+      totalDistance:
+        Math.round(merged.reduce((s, r) => s + r.distance, 0) * 10) / 10,
       dateRange: {
         from: merged.length > 0 ? merged[merged.length - 1].date : null,
         to: merged.length > 0 ? merged[0].date : null,
       },
     };
 
-    return NextResponse.json({ success: true, stats });
+    return NextResponse.json({ success: true, stats, runs: merged });
   } catch (e) {
     console.error("Import error:", e);
     return NextResponse.json(
-      { error: `Import failed: ${e instanceof Error ? e.message : "Unknown error"}` },
-      { status: 500 }
+      {
+        error: `Import failed: ${e instanceof Error ? e.message : "Unknown error"}`,
+      },
+      { status: 500 },
     );
   }
 }
 
-// --- Extract workouts from export.xml text ---
-function extractWorkouts(xmlText: string) {
-  const workouts: any[] = [];
-  const lines = xmlText.split("\n");
+// --- Stream export.xml and extract running/walking/hiking workouts ---
+// Decodes the stream in bounded byte windows and pulls out complete
+// <Workout>...</Workout> elements as they arrive, so the whole file is never
+// held in one string.
+async function extractWorkoutsFromStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<ParsedWorkout[]> {
+  const workouts: ParsedWorkout[] = [];
+  const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+  const reader = stream.getReader();
 
-  let inWorkout = false;
-  let isRunning = false;
-  let workoutLines: string[] = [];
+  let buffer = "";
+  const WINDOW = 8 * 1024 * 1024; // 8 MB per decode
+  const MAX_BUFFER = 64 * 1024 * 1024; // 64 MB safety cap
+  const workoutOpen = /<Workout\s/;
 
-  for (const line of lines) {
-    if (line.includes("<Workout ") && (line.includes("Running") || line.includes("Walking") || line.includes("Hiking"))) {
-      inWorkout = true;
-      isRunning = true;
-      workoutLines = [line];
-    } else if (line.includes("<Workout ")) {
-      inWorkout = true;
-      isRunning = false;
-    } else if (inWorkout && isRunning) {
-      workoutLines.push(line);
-      if (line.includes("</Workout>")) {
-        const workout = parseWorkoutXml(workoutLines.join("\n"));
-        if (workout && workout.distance > 0.1) {
+  const processBuffer = () => {
+    while (true) {
+      const openMatch = workoutOpen.exec(buffer);
+      if (!openMatch) {
+        if (buffer.length > 16) buffer = buffer.slice(-16);
+        return;
+      }
+      const openIdx = openMatch.index;
+      const openTagEnd = buffer.indexOf(">", openIdx);
+      if (openTagEnd === -1) {
+        buffer = buffer.slice(openIdx);
+        return;
+      }
+      const isSelfClosing = buffer[openTagEnd - 1] === "/";
+
+      let elementEnd: number;
+      if (isSelfClosing) {
+        elementEnd = openTagEnd + 1;
+      } else {
+        const closeIdx = buffer.indexOf("</Workout>", openTagEnd);
+        if (closeIdx === -1) {
+          buffer = buffer.slice(openIdx);
+          return;
+        }
+        elementEnd = closeIdx + "</Workout>".length;
+      }
+
+      const element = buffer.slice(openIdx, elementEnd);
+      buffer = buffer.slice(elementEnd);
+
+      // Only running-type workouts, matching the original filter.
+      if (
+        element.includes("Running") ||
+        element.includes("Walking") ||
+        element.includes("Hiking")
+      ) {
+        const workout = parseWorkoutXml(element);
+        if (
+          workout &&
+          Number.isFinite(workout.distance) &&
+          workout.distance > 0
+        ) {
           workouts.push(workout);
         }
-        inWorkout = false;
-        isRunning = false;
-        workoutLines = [];
       }
-    } else if (inWorkout && line.includes("</Workout>")) {
-      inWorkout = false;
-      workoutLines = [];
     }
+  };
+
+  const feed = (bytes: Uint8Array) => {
+    for (let off = 0; off < bytes.length; off += WINDOW) {
+      const window = bytes.subarray(off, Math.min(off + WINDOW, bytes.length));
+      buffer += decoder.decode(window, { stream: true });
+      processBuffer();
+      if (buffer.length > MAX_BUFFER) {
+        throw new Error(
+          "Oversized element without a closing tag (malformed XML?).",
+        );
+      }
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const bytes =
+        value instanceof Uint8Array
+          ? value
+          : new Uint8Array(value as ArrayBufferLike);
+      feed(bytes);
+    }
+    buffer += decoder.decode();
+    processBuffer();
+  } finally {
+    reader.releaseLock();
   }
 
   return workouts;
@@ -116,32 +187,52 @@ function parseWorkoutXml(xml: string) {
   try {
     const startDate = extractAttr(xml, "startDate");
     const endDate = extractAttr(xml, "endDate");
-    const duration = parseFloat(extractAttr(xml, "duration") || "0");
-    if (!startDate || !endDate) return null;
+    let duration = parseFloat(extractAttr(xml, "duration") || "0");
+    const durationUnit = extractAttr(xml, "durationUnit");
+    if (durationUnit === "s") duration /= 60;
+    if (durationUnit === "hr") duration *= 60;
+    if (!startDate || !endDate || !Number.isFinite(duration) || duration <= 0)
+      return null;
+    if (
+      !Number.isFinite(
+        new Date(
+          startDate.replace(/ ([+-]\d{4})$/, "$1").replace(" ", "T"),
+        ).getTime(),
+      )
+    )
+      return null;
 
-    // Distance
-    let distance = 0;
-    const distMatch = xml.match(/IdentifierDistanceWalkingRunning[^>]*sum="([^"]+)"/);
-    if (distMatch) distance = parseFloat(distMatch[1]);
-
-    // Calories (active + basal)
-    let activeCalories = 0;
-    let basalCalories = 0;
-    const activeCalMatch = xml.match(/IdentifierActiveEnergyBurned[^>]*sum="([^"]+)"/);
-    if (activeCalMatch) activeCalories = Math.round(parseFloat(activeCalMatch[1]));
-    const basalCalMatch = xml.match(/IdentifierBasalEnergyBurned[^>]*sum="([^"]+)"/);
-    if (basalCalMatch) basalCalories = Math.round(parseFloat(basalCalMatch[1]));
-
-    // Heart Rate
-    let avgHeartRate: number | null = null;
-    let maxHeartRate: number | null = null;
-    let minHeartRate: number | null = null;
-    const hrMatch = xml.match(/IdentifierHeartRate[^>]*average="([^"]+)"[^>]*minimum="([^"]*)"[^>]*maximum="([^"]+)"/);
-    if (hrMatch) {
-      avgHeartRate = Math.round(parseFloat(hrMatch[1]));
-      minHeartRate = Math.round(parseFloat(hrMatch[2]));
-      maxHeartRate = Math.round(parseFloat(hrMatch[3]));
-    }
+    // Read attributes independently: Apple Health does not guarantee their order.
+    const statistic = (identifier: string) =>
+      xml.match(
+        new RegExp(`<WorkoutStatistics[^>]*${identifier}[^>]*>`),
+      )?.[0] || "";
+    const numeric = (tag: string, attribute: string): number | null => {
+      const raw = extractAttr(tag, attribute);
+      if (raw === null) return null;
+      const n = Number.parseFloat(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+    const distanceTag = statistic("IdentifierDistanceWalkingRunning");
+    let distance =
+      numeric(distanceTag, "sum") ?? numeric(xml, "totalDistance") ?? 0;
+    const distanceUnit =
+      extractAttr(distanceTag, "unit") || extractAttr(xml, "totalDistanceUnit");
+    if (distanceUnit === "mi") distance *= 1.609344;
+    if (distanceUnit === "m") distance /= 1000;
+    const energy = (identifier: string) => {
+      const tag = statistic(identifier),
+        value = numeric(tag, "sum");
+      return value === null
+        ? null
+        : Math.round(extractAttr(tag, "unit") === "kJ" ? value / 4.184 : value);
+    };
+    const activeCalories = energy("IdentifierActiveEnergyBurned");
+    const basalCalories = energy("IdentifierBasalEnergyBurned");
+    const hrTag = statistic("IdentifierHeartRate");
+    const avgHeartRate = numeric(hrTag, "average");
+    const maxHeartRate = numeric(hrTag, "maximum");
+    const minHeartRate = numeric(hrTag, "minimum");
 
     // Step count / Cadence
     let cadence: number | null = null;
@@ -155,7 +246,9 @@ function parseWorkoutXml(xml: string) {
     // Running Power
     let avgPower: number | null = null;
     let maxPower: number | null = null;
-    const powerMatch = xml.match(/IdentifierRunningPower[^>]*average="([^"]+)"[^>]*minimum="[^"]*"[^>]*maximum="([^"]+)"/);
+    const powerMatch = xml.match(
+      /IdentifierRunningPower[^>]*average="([^"]+)"[^>]*minimum="[^"]*"[^>]*maximum="([^"]+)"/,
+    );
     if (powerMatch) {
       avgPower = Math.round(parseFloat(powerMatch[1]));
       maxPower = Math.round(parseFloat(powerMatch[2]));
@@ -169,7 +262,9 @@ function parseWorkoutXml(xml: string) {
     // Speed
     let avgSpeed: number | null = null;
     let maxSpeed: number | null = null;
-    const speedMatch = xml.match(/IdentifierRunningSpeed[^>]*average="([^"]+)"[^>]*minimum="[^"]*"[^>]*maximum="([^"]+)"/);
+    const speedMatch = xml.match(
+      /IdentifierRunningSpeed[^>]*average="([^"]+)"[^>]*minimum="[^"]*"[^>]*maximum="([^"]+)"/,
+    );
     if (speedMatch) {
       avgSpeed = Math.round(parseFloat(speedMatch[1]) * 100) / 100;
       maxSpeed = Math.round(parseFloat(speedMatch[2]) * 100) / 100;
@@ -178,7 +273,9 @@ function parseWorkoutXml(xml: string) {
     // Stride Length
     let avgStride: number | null = null;
     let maxStride: number | null = null;
-    const strideMatch = xml.match(/IdentifierRunningStrideLength[^>]*average="([^"]+)"[^>]*minimum="[^"]*"[^>]*maximum="([^"]+)"/);
+    const strideMatch = xml.match(
+      /IdentifierRunningStrideLength[^>]*average="([^"]+)"[^>]*minimum="[^"]*"[^>]*maximum="([^"]+)"/,
+    );
     if (strideMatch) {
       avgStride = Math.round(parseFloat(strideMatch[1]) * 100) / 100;
       maxStride = Math.round(parseFloat(strideMatch[2]) * 100) / 100;
@@ -186,27 +283,45 @@ function parseWorkoutXml(xml: string) {
 
     // Ground Contact Time
     let avgGCT: number | null = null;
-    const gctMatch = xml.match(/IdentifierRunningGroundContactTime[^>]*average="([^"]+)"/);
+    const gctMatch = xml.match(
+      /IdentifierRunningGroundContactTime[^>]*average="([^"]+)"/,
+    );
     if (gctMatch) avgGCT = Math.round(parseFloat(gctMatch[1]));
 
     // Vertical Oscillation
     let avgVertOsc: number | null = null;
-    const voMatch = xml.match(/IdentifierRunningVerticalOscillation[^>]*average="([^"]+)"/);
+    const voMatch = xml.match(
+      /IdentifierRunningVerticalOscillation[^>]*average="([^"]+)"/,
+    );
     if (voMatch) avgVertOsc = Math.round(parseFloat(voMatch[1]) * 100) / 100;
 
     // Weather
-    let weather: any = null;
+    let weather: {
+      temperature: number | null;
+      humidity: number | null;
+    } | null = null;
     const tempMatch = xml.match(/HKWeatherTemperature[^>]*value="([^"]+)/);
     const humMatch = xml.match(/HKWeatherHumidity[^>]*value="([^"]+)/);
     if (tempMatch || humMatch) {
       const tempF = tempMatch ? parseFloat(tempMatch[1]) : null;
-      const tempC = tempF !== null ? Math.round((tempF - 32) * 5 / 9) : null;
-      const humidity = humMatch ? Math.round(parseFloat(humMatch[1]) / 100) : null;
+      const tempC =
+        tempF !== null
+          ? tempMatch?.[1].includes("degC")
+            ? tempF
+            : Math.round(((tempF - 32) * 5) / 9)
+          : null;
+      const rawHumidity = humMatch ? parseFloat(humMatch[1]) : null;
+      const humidity =
+        rawHumidity === null
+          ? null
+          : Math.round(rawHumidity <= 1 ? rawHumidity * 100 : rawHumidity);
       weather = { temperature: tempC, humidity };
     }
 
     // Indoor
-    const indoor = xml.includes('HKIndoorWorkout') && xml.includes('value="1"');
+    const indoorTag =
+      xml.match(/<MetadataEntry[^>]*HKIndoorWorkout[^>]*>/)?.[0] || "";
+    const indoor = extractAttr(indoorTag, "value") === "1";
 
     // Route file reference
     let routeFile: string | null = null;
@@ -219,9 +334,11 @@ function parseWorkoutXml(xml: string) {
     if (effortMatch) effortScore = parseInt(effortMatch[1]);
 
     // Heart Rate Zones
-    let heartRateZones: any[] | null = null;
-    const zoneMatches = xml.matchAll(/<WorkoutZone(?:\s+minimum="([^"]*)")?(?:\s+maximum="([^"]*)")?\s+duration="([^"]+)"/g);
-    const zones: any[] = [];
+    let heartRateZones: Zone[] | null = null;
+    const zoneMatches = xml.matchAll(
+      /<WorkoutZone(?:\s+minimum="([^"]*)")?(?:\s+maximum="([^"]*)")?\s+duration="([^"]+)"/g,
+    );
+    const zones: Zone[] = [];
     for (const z of zoneMatches) {
       zones.push({
         min: z[1] ? parseInt(z[1]) : null,
@@ -233,19 +350,24 @@ function parseWorkoutXml(xml: string) {
 
     // Workout type
     const typeMatch = xml.match(/workoutActivityType="([^"]+)"/);
-    const workoutType = typeMatch ? typeMatch[1].replace("HKWorkoutActivityType", "") : "Running";
+    const workoutType = typeMatch
+      ? typeMatch[1].replace("HKWorkoutActivityType", "")
+      : "Running";
 
     const pace = distance > 0 ? duration / distance : 0;
 
     return {
       startDate,
       endDate,
-      duration: Math.round(duration * 100) / 100,
-      distance: Math.round(distance * 1000) / 1000,
-      pace: Math.round(pace * 100) / 100,
+      duration,
+      distance,
+      pace,
       activeCalories,
       basalCalories,
-      totalCalories: activeCalories + basalCalories,
+      totalCalories:
+        activeCalories === null && basalCalories === null
+          ? null
+          : (activeCalories ?? 0) + (basalCalories ?? 0),
       avgHeartRate,
       maxHeartRate,
       minHeartRate,
@@ -279,24 +401,12 @@ function extractAttr(xml: string, name: string): string | null {
 
 // --- Parse uploaded GPX files ---
 async function parseUploadedGpxFiles(gpxFiles: File[]) {
-  const routeMap = new Map<string, any>();
+  const routeMap = new Map<string, RouteRecord>();
 
   for (const file of gpxFiles) {
     try {
       const xml = await file.text();
-      const points: any[] = [];
-
-      const trkptRegex = /<trkpt\s+lon="([^"]+)"\s+lat="([^"]+)"[^>]*>[\s\S]*?<ele>([^<]+)<\/ele>[\s\S]*?<time>([^<]+)<\/time>[\s\S]*?<speed>([^<]+)<\/speed>[\s\S]*?<\/trkpt>/g;
-      let match;
-      while ((match = trkptRegex.exec(xml)) !== null) {
-        points.push({
-          lng: parseFloat(match[1]),
-          lat: parseFloat(match[2]),
-          elevation: parseFloat(match[3]),
-          time: match[4],
-          speed: parseFloat(match[5]),
-        });
-      }
+      const points = parseGpx(xml);
 
       if (points.length < 2) continue;
 
@@ -306,7 +416,7 @@ async function parseUploadedGpxFiles(gpxFiles: File[]) {
 
       const routeData = {
         type: "LineString",
-        coordinates: simplified.map((p) => [p.lng, p.lat, p.elevation]),
+        coordinates: simplified.map((p) => [p.lng, p.lat, p.elevation ?? 0]),
       };
 
       // Store with the filename as key (matches against route file references)
@@ -323,11 +433,18 @@ async function parseUploadedGpxFiles(gpxFiles: File[]) {
 }
 
 // --- Merge workouts with routes ---
-function mergeWorkoutsWithRoutes(workouts: any[], routes: Map<string, any>) {
+function mergeWorkoutsWithRoutes(
+  workouts: ParsedWorkout[],
+  routes: Map<string, RouteRecord>,
+) {
   const merged = workouts.map((workout) => {
-    const parsedStart = new Date(workout.startDate.replace(" +", "+").replace(" ", "T"));
-    const parsedEnd = new Date(workout.endDate.replace(" +", "+").replace(" ", "T"));
-    const dateStr = parsedStart.toISOString().split("T")[0];
+    const parsedStart = new Date(
+      workout.startDate.replace(/ ([+-]\d{4})$/, "$1").replace(" ", "T"),
+    );
+    const parsedEnd = new Date(
+      workout.endDate.replace(/ ([+-]\d{4})$/, "$1").replace(" ", "T"),
+    );
+    const dateStr = workout.startDate.slice(0, 10);
 
     // Match route by file reference
     let routeData = null;
@@ -335,14 +452,14 @@ function mergeWorkoutsWithRoutes(workouts: any[], routes: Map<string, any>) {
     if (workout.routeFile) {
       // Try exact match first
       if (routes.has(workout.routeFile)) {
-        const route = routes.get(workout.routeFile);
+        const route = routes.get(workout.routeFile)!;
         routeData = route.routeData;
         pointCount = route.pointCount;
       } else {
         // Try matching by filename only (uploaded files won't have full path)
         const routeFileName = workout.routeFile.split("/").pop();
         for (const [key, route] of routes.entries()) {
-          if (key.endsWith(routeFileName)) {
+          if (routeFileName && key.endsWith(routeFileName)) {
             routeData = route.routeData;
             pointCount = route.pointCount;
             break;
@@ -386,6 +503,8 @@ function mergeWorkoutsWithRoutes(workouts: any[], routes: Map<string, any>) {
   });
 
   // Sort newest first
-  merged.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+  merged.sort(
+    (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
+  );
   return merged;
 }
