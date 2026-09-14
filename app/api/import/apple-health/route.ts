@@ -28,8 +28,11 @@ export async function POST(request: NextRequest) {
 
     if (all.length === 0) {
       return NextResponse.json(
-        { error: "No file provided. Please upload your export.xml (and optionally the workout-routes folder)." },
-        { status: 400 }
+        {
+          error:
+            "No file provided. Please upload your export.xml (and optionally the workout-routes folder).",
+        },
+        { status: 400 },
       );
     }
 
@@ -38,8 +41,11 @@ export async function POST(request: NextRequest) {
 
     if (!xmlFile) {
       return NextResponse.json(
-        { error: "No export.xml found. Please include the Apple Health export.xml file." },
-        { status: 400 }
+        {
+          error:
+            "No export.xml found. Please include the Apple Health export.xml file.",
+        },
+        { status: 400 },
       );
     }
 
@@ -56,7 +62,7 @@ export async function POST(request: NextRequest) {
             : "Could not parse this file as an Apple Health export.",
           details: result.errors.length > 0 ? result.errors : undefined,
         },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -71,7 +77,7 @@ export async function POST(request: NextRequest) {
           gpxByName.set(basename, parseGpx(text));
         } catch (e) {
           result.errors.push(
-            `Failed to read GPX ${g.name}: ${e instanceof Error ? e.message : String(e)}`
+            `Failed to read GPX ${g.name}: ${e instanceof Error ? e.message : String(e)}`,
           );
         }
       }
@@ -81,13 +87,18 @@ export async function POST(request: NextRequest) {
     // TODO: Replace with actual user ID from auth
     const userId = "demo-user";
 
-    const runs = result.workouts.map((workout) => workoutToRunData(workout, userId));
+    const runs = result.workouts.map((workout) =>
+      workoutToRunData(workout, userId),
+    );
 
     // In production, save to database via Prisma:
     // const created = await prisma.run.createMany({ data: runs });
 
     return NextResponse.json({
       success: true,
+      persisted: false,
+      message:
+        "Parsed only. Use the Import page to persist workouts in your browser.",
       imported: runs.length,
       routesAttached,
       gpxProvided: gpxFiles.length,
@@ -103,7 +114,7 @@ export async function POST(request: NextRequest) {
     console.error("Apple Health import error:", e);
     return NextResponse.json(
       { error: "Failed to process file. Please try again." },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

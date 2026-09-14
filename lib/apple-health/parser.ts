@@ -68,7 +68,7 @@ export function parseAppleHealthXml(xmlText: string): ParseResult {
       if (!type || !RUNNING_TYPES.includes(type)) continue;
 
       try {
-        const workout = parseWorkoutElement(attrs, innerContent, xmlText);
+        const workout = parseWorkoutElement(attrs, innerContent);
         workouts.push(workout);
       } catch (e) {
         errors.push(`Failed to parse workout: ${e instanceof Error ? e.message : String(e)}`);
@@ -169,7 +169,7 @@ export async function parseAppleHealthStream(
         const type = extractAttr(attrs, "workoutActivityType");
         if (type && RUNNING_TYPES.includes(type)) {
           try {
-            workouts.push(parseWorkoutElement(attrs, innerContent, ""));
+            workouts.push(parseWorkoutElement(attrs, innerContent));
           } catch (e) {
             errors.push(
               `Failed to parse workout: ${e instanceof Error ? e.message : String(e)}`
@@ -224,8 +224,7 @@ export async function parseAppleHealthStream(
 
 function parseWorkoutElement(
   attrs: string,
-  innerContent: string,
-  _fullXml: string
+  innerContent: string
 ): HealthWorkout {
   const startDate = new Date(extractAttr(attrs, "startDate") || "");
   const endDate = new Date(extractAttr(attrs, "endDate") || "");

@@ -4,6 +4,7 @@ import Script from "next/script";
 import "./globals.css";
 import { Sidebar } from "@/components/layout/sidebar";
 import { ThemeProvider } from "@/components/layout/theme-provider";
+import { FitnessProvider } from "@/components/fitness/provider";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -19,7 +20,7 @@ export const metadata: Metadata = {
     template: "%s | FitJournal",
   },
   description:
-    "Track your runs, monitor heart rate, GPS routes, cadence, and get AI coaching insights. Your all-in-one personal fitness analytics platform with Apple Health integration.",
+    "Track your runs, monitor heart rate, GPS routes, cadence, and review training insights. Your all-in-one personal fitness analytics platform with Apple Health integration.",
   keywords: [
     "fitness tracker",
     "running journal",
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
     "GPS running",
     "Apple Health",
     "fitness analytics",
-    "AI coach",
+    "training insights",
     "running pace",
     "workout tracker",
     "cadence tracker",
@@ -47,7 +48,7 @@ export const metadata: Metadata = {
     siteName: "FitJournal",
     title: "FitJournal - Personal Fitness Analytics & Running Tracker",
     description:
-      "Track your runs, monitor heart rate, GPS routes, cadence, and get AI coaching insights. Your all-in-one personal fitness analytics platform.",
+      "Track your runs, monitor heart rate, GPS routes, cadence, and review training insights. Your all-in-one personal fitness analytics platform.",
     images: [
       {
         url: "/og-image.png",
@@ -61,7 +62,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "FitJournal - Personal Fitness Analytics & Running Tracker",
     description:
-      "Track your runs, monitor heart rate, GPS routes, cadence, and get AI coaching insights.",
+      "Track your runs, monitor heart rate, GPS routes, cadence, and review training insights.",
     images: ["/og-image.png"],
   },
   robots: {
@@ -112,17 +113,29 @@ export default function RootLayout({
       </Script>
       <body className={`${inter.className} antialiased`}>
         <ThemeProvider>
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar />
-            <main className="flex-1 overflow-y-auto">
-              <div className="container mx-auto p-6 lg:p-8 max-w-7xl">
-                <div className="flex justify-end mb-4">
-                  <ThemeToggle />
+          <FitnessProvider>
+            <a className="skip-link" href="#main-content">
+              Skip to content
+            </a>
+            <div className="app-shell">
+              <Sidebar />
+              <main id="main-content" className="main-content">
+                <div className="workspace-content">
+                  <div className="topbar">
+                    <span>
+                      PERSONAL WORKSPACE <span className="topbar-slash">/</span>{" "}
+                      <strong>FitJournal</strong>
+                    </span>
+                    <div className="topbar-right">
+                      <span className="local-badge">Saved on this device</span>
+                      <ThemeToggle />
+                    </div>
+                  </div>
+                  {children}
                 </div>
-                {children}
-              </div>
-            </main>
-          </div>
+              </main>
+            </div>
+          </FitnessProvider>
         </ThemeProvider>
       </body>
     </html>
