@@ -205,7 +205,7 @@ test("Apple Health import rejects empty or invalid exports", async () => {
       body: form,
     }),
   );
-  assert.equal(response.status, 404);
+  assert.equal(response.status, 422);
 });
 test("reimports preserve edits, skip duplicates, and can attach missing GPS", () => {
   const source = {
@@ -236,4 +236,105 @@ test("reimports preserve edits, skip duplicates, and can attach missing GPS", ()
   assert.equal(rows[0].distance, 6);
   assert.equal(rows[0].notes, "Keep my edit");
   assert.equal(rows[0].routeData.coordinates.length, 2);
+});
+const localImport = load(path.join(root, "lib/apple-health/import-files.ts"));
+test("local importer streams across split XML tags and reports progress", async () => {
+  const xml =
+    '<HealthData><Record value="ignored"/><Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="30" durationUnit="min" startDate="2026-09-01 09:00:00 -0400" endDate="2026-09-01 09:30:00 -0400"><WorkoutStatistics type="HKQuantityTypeIdentifierDistanceWalkingRunning" sum="5" unit="km"/></Workout></HealthData>';
+  const bytes = new TextEncoder().encode(xml);
+  let offset = 0;
+  const progress = [];
+  const file = {
+    name: "export.xml",
+    size: bytes.length,
+    stream: () =>
+      new ReadableStream({
+        pull(controller) {
+          if (offset >= bytes.length) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(bytes.slice(offset, offset + 7));
+          offset += 7;
+        },
+      }),
+  };
+  const rows = await localImport.parseHealthFiles(file, [], (p) =>
+    progress.push(p.percent),
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].distance, 5);
+  assert.equal(rows[0].pace, 6);
+  assert.equal(progress.at(-1), 98);
+  assert.ok(progress.length > 5);
+  assert.deepEqual(
+    [...progress].sort((a, b) => a - b),
+    progress,
+  );
+});
+test("local importer rejects a truncated workout without saving partial history", async () => {
+  const file = new File(
+    [
+      '<HealthData><Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="30">',
+    ],
+    "export.xml",
+  );
+  await assert.rejects(
+    () => localImport.parseHealthFiles(file, []),
+    /XML ends inside a workout/,
+  );
+});
+
+test("folder selection chooses export.xml and GPX, ignoring CDA and unrelated files", () => {
+  const { selectHealthExport } = load(path.join(root, "lib/apple-health/select-files.ts"));
+  const xml = new File([], "export.xml");
+  const route = new File([], "route.gpx");
+  assert.deepEqual(selectHealthExport([new File([], "export_cda.xml"), route, xml, new File([], ".DS_Store")]), { xml, routes: [route] });
+  assert.throws(() => selectHealthExport([route]), /No export.xml/);
+  assert.throws(() => selectHealthExport([xml, xml]), /multiple exports/);
+});
+
+test("CDA file gives actionable feedback", async () => {
+  await assert.rejects(() => localImport.parseHealthFiles(new File([], "export_cda.xml"), []), /clinical document/);
+});
+
+test("GPS import caps routes at 200 points and preserves both endpoints", async () => {
+  const xml = new File(['<HealthData><Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="30" startDate="2026-09-01 09:00:00 -0400" endDate="2026-09-01 09:30:00 -0400" totalDistance="5" totalDistanceUnit="km"><WorkoutRoute><FileReference path="/workout-routes/test.gpx"/></WorkoutRoute></Workout></HealthData>'], "export.xml");
+  for (const count of [2, 199, 200, 373, 1501]) {
+    const points = Array.from({ length: count }, (_, i) => `<trkpt lat="${40 + i / 10000}" lon="-79"><ele>10</ele></trkpt>`).join("");
+    const rows = await localImport.parseHealthFiles(xml, [new File([`<gpx><trk><trkseg>${points}</trkseg></trk></gpx>`], "test.gpx")]);
+    const coords = rows[0].routeData.coordinates;
+    assert.equal(coords.length, Math.min(count, 200));
+    assert.equal(rows[0].pointCount, count);
+    assert.deepEqual(coords[0], [-79, 40, 10]);
+    assert.deepEqual(coords.at(-1), [-79, 40 + (count - 1) / 10000, 10]);
+  }
+});
+
+const archiveImport = load(path.join(root, "lib/apple-health/import-archive.ts"));
+async function healthZip(entries) {
+  const { ZipWriter, BlobWriter, TextReader } = require("@zip.js/zip.js");
+  const writer = new ZipWriter(new BlobWriter(), { useWebWorkers: false });
+  for (const [name, text] of entries) await writer.add(name, new TextReader(text));
+  return new File([await writer.close()], "export.zip");
+}
+test("ZIP streams workouts, includes routes, and ignores CDA", async () => {
+  const xml = '<HealthData><Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="30" startDate="2026-09-01 09:00:00 -0400" endDate="2026-09-01 09:30:00 -0400" totalDistance="5" totalDistanceUnit="km"><WorkoutRoute><FileReference path="/workout-routes/test.gpx"/></WorkoutRoute></Workout></HealthData>';
+  const file = await healthZip([
+    ["apple_health_export/export.xml", xml],
+    ["apple_health_export/export_cda.xml", "ignored"],
+    ["apple_health_export/workout-routes/test.gpx", '<gpx><trkpt lat="40" lon="-79"/><trkpt lat="41" lon="-78"/></gpx>'],
+  ]);
+  const progress = [];
+  const rows = await archiveImport.parseHealthArchive(file, p => progress.push(p.percent));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].distance, 5);
+  assert.equal(rows[0].routeData.coordinates.length, 2);
+  assert.deepEqual(progress, [...progress].sort((a,b)=>a-b));
+});
+test("ZIP rejects missing, ambiguous, damaged archives and truncated workouts", async () => {
+  await assert.rejects(() => archiveImport.parseHealthArchive(new File(["not a zip"], "export.zip")), /Could not import ZIP/);
+  await assert.rejects(() => healthZip([["export_cda.xml", "none"]]).then(file => archiveImport.parseHealthArchive(file)), /No export.xml/);
+  await assert.rejects(() => healthZip([["a/export.xml", ""], ["b/export.xml", ""]]).then(file => archiveImport.parseHealthArchive(file)), /multiple health exports/);
+  await assert.rejects(() => healthZip([["export.xml", '<HealthData><Workout duration="30">']]).then(file => archiveImport.parseHealthArchive(file)), /ends inside a workout/);
 });

@@ -43,3 +43,6 @@ next-env.d.ts
 
 # local audit and test outputs
 /work/
+
+# private Apple Health export data (health/GPS PII — never commit)
+/export/

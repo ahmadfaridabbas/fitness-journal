@@ -34,15 +34,17 @@ The tests use Node's built-in test runner and the project's existing TypeScript 
 
 ## Import
 
-The Import page sends an Apple Health `export.xml` and optional GPX files to `/api/import/sync` for parsing, then persists the returned records in the browser. Reimports skip duplicates, preserve edits, and can attach missing GPS routes. Parsing supports kilometre/metre/mile distance, minute/second/hour duration, signed time-zone offsets, and missing optional metrics. The calendar date at the workout source is preserved.
+The Import page accepts the extracted `apple_health_export` folder, automatically selecting `export.xml` and its GPX routes while ignoring `export_cda.xml` and unrelated files. Individual XML and GPX selection is also available. You can also select `export.zip` directly: the background worker reads GPS routes and streams the decompressed XML without holding the entire XML in memory. CDA documents and unrelated archive entries are ignored, and archives with missing or multiple workout exports are rejected. GPS routes retain their endpoints and are limited to 200 display points.
 
-The compatibility `/api/import/apple-health` endpoint parses and returns records; it explicitly reports that they have not been persisted. The active interface uses `/api/import/sync`.
+The Import page reads Apple Health `export.xml` and optional GPX files on the device using a background Web Worker. The XML is decoded incrementally, with progress and cancellation, then results are persisted in the browser. Files are not uploaded, so an empty server response or hosting upload/time limit cannot interrupt this import. Reimports skip duplicates, preserve edits, and can attach missing GPS routes. Parsing supports kilometre/metre/mile distance, minute/second/hour duration, signed time-zone offsets, and missing optional metrics. The calendar date at the workout source is preserved.
+
+The compatibility `/api/import/apple-health` endpoint parses and returns records; it explicitly reports that they have not been persisted. The compatibility `/api/import/sync` endpoint uses the same parser as the browser worker. The active interface does not make an import network request.
 
 ## API and deployment boundaries
 
 The Prisma/PostgreSQL schema remains in place but is not connected to an authenticated user backend. New data is device-local and does not sync across browsers. Server POST endpoints for records return 501 rather than falsely claiming to have saved data. Read endpoints describe their source or direct clients to browser-owned state.
 
-The application remains a standard Next.js application suitable for the existing Netlify setup. Build with `npm run build`; keep the deployment's Next.js integration. Import parsing uses the Node runtime and does not depend on a writable deployed filesystem. Hosting request-size and execution limits still apply to large Apple Health exports. A deployed smoke test is required before treating a release as verified on Netlify.
+The application remains a standard Next.js application suitable for the existing Netlify setup. Build with `npm run build`; keep the deployment's Next.js integration. The browser importer does not depend on server upload limits or a writable deployed filesystem. Device memory and browser storage capacity still apply; the compatibility server import endpoints remain subject to hosting limits. A deployed smoke test is required before treating a release as verified on Netlify.
 
 No deployment was performed as part of this local upgrade.
 
