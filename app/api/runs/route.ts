@@ -1,3 +1,4 @@
+import { browserStorageOnly } from "@/lib/api-storage";
 import { NextRequest, NextResponse } from "next/server";
 import { allRuns as mockRuns } from "@/lib/mock-data";
 
@@ -5,7 +6,10 @@ import { allRuns as mockRuns } from "@/lib/mock-data";
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const sortBy = searchParams.get("sortBy") || "date";
-  const limit = parseInt(searchParams.get("limit") || "50");
+  const requestedLimit = Number(searchParams.get("limit") || "50");
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.min(1000, Math.floor(requestedLimit)))
+    : 50;
 
   let runs = [...mockRuns];
 
@@ -15,40 +19,23 @@ export async function GET(request: NextRequest) {
   } else if (sortBy === "pace") {
     runs.sort((a, b) => a.pace - b.pace);
   } else {
-    runs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    runs.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
   }
 
   // Limit
   runs = runs.slice(0, limit);
 
-  return NextResponse.json({ runs, total: mockRuns.length });
+  return NextResponse.json({
+    runs,
+    total: mockRuns.length,
+    source: "bundled Apple Health history",
+    storage: "browser edits are available in the interface",
+  });
 }
 
 // POST /api/runs - Create a new run
-export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-
-    // Validate required fields
-    const { date, distance, duration } = body;
-    if (!date || !distance || !duration) {
-      return NextResponse.json(
-        { error: "date, distance, and duration are required" },
-        { status: 400 }
-      );
-    }
-
-    // In production, this would save to database via Prisma
-    const newRun = {
-      id: `run_${Date.now()}`,
-      pace: duration / distance,
-      calories: Math.round(distance * 76 * 1.036), // estimate
-      createdAt: new Date().toISOString(),
-      ...body,
-    };
-
-    return NextResponse.json({ run: newRun }, { status: 201 });
-  } catch {
-    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
-  }
+export async function POST() {
+  return browserStorageOnly();
 }

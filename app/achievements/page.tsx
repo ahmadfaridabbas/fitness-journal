@@ -1,211 +1,132 @@
 "use client";
-
-import React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DetailSlider } from "@/components/shared/detail-slider";
-import { mockAchievements } from "@/lib/mock-data";
-import { Trophy, Lock } from "lucide-react";
-
-const tierColors: Record<string, string> = {
-  bronze: "border-orange-400 bg-orange-50",
-  silver: "border-gray-400 bg-gray-50",
-  gold: "border-yellow-400 bg-yellow-50",
-  platinum: "border-blue-400 bg-blue-50",
-  diamond: "border-cyan-400 bg-cyan-50",
-  crown: "border-purple-400 bg-purple-50",
-};
-
-const tierBadgeColors: Record<string, "default" | "secondary" | "success" | "warning"> = {
-  bronze: "warning",
-  silver: "secondary",
-  gold: "success",
-  platinum: "default",
-  diamond: "default",
-  crown: "default",
-};
-
+import { Trophy, Check } from "lucide-react";
+import { useFitness } from "@/components/fitness/provider";
+import { PageHeader, Panel } from "@/components/fitness/ui";
+import { summarize } from "@/lib/fitness";
+import { formatPace } from "@/lib/utils";
 export default function AchievementsPage() {
-  const [selectedAchievement, setSelectedAchievement] = React.useState<typeof mockAchievements[0] | null>(null);
-
-  const unlocked = mockAchievements.filter((a) => a.dateUnlocked);
-  const inProgress = mockAchievements.filter((a) => !a.dateUnlocked);
-
-  const categories = ["all", "distance", "streak", "weather", "heartRate"];
-
+  const { workouts } = useFitness();
+  const s = summarize(workouts);
+  const milestones = [
+    {
+      title: "The first step",
+      description: "Record your first workout",
+      current: s.count,
+      target: 1,
+      unit: "workout",
+    },
+    {
+      title: "Finding your rhythm",
+      description: "Complete 10 activities",
+      current: s.count,
+      target: 10,
+      unit: "workouts",
+    },
+    {
+      title: "A hundred kilometres",
+      description: "Cover 100 km across all activities",
+      current: s.distance,
+      target: 100,
+      unit: "km",
+    },
+    {
+      title: "Going the distance",
+      description: "Cover 500 km across all activities",
+      current: s.distance,
+      target: 500,
+      unit: "km",
+    },
+    {
+      title: "The 5K milestone",
+      description: "Complete a running workout of at least 5 km",
+      current: s.longest,
+      target: 5,
+      unit: "km",
+    },
+    {
+      title: "The 10K milestone",
+      description: "Complete a running workout of at least 10 km",
+      current: s.longest,
+      target: 10,
+      unit: "km",
+    },
+    {
+      title: "Three days of movement",
+      description: "Record activity on 3 consecutive days",
+      current: s.longestStreak,
+      target: 3,
+      unit: "days",
+    },
+    {
+      title: "A week in motion",
+      description: "Record activity on 7 consecutive days",
+      current: s.longestStreak,
+      target: 7,
+      unit: "days",
+    },
+  ];
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-            <Trophy className="h-8 w-8 text-yellow-500" />
-            Achievements
-          </h1>
-          <p className="text-muted-foreground mt-1">
-            Gamify your fitness journey. Unlock badges and climb the ranks.
-          </p>
-        </div>
-        <div className="text-right">
-          <p className="text-2xl font-bold">{unlocked.length}/{mockAchievements.length}</p>
-          <p className="text-sm text-muted-foreground">Unlocked</p>
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="p-4 text-center">
-            <span className="text-3xl">🏆</span>
-            <p className="text-sm font-medium mt-1">Total Unlocked</p>
-            <p className="text-2xl font-bold">{unlocked.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <span className="text-3xl">🔥</span>
-            <p className="text-sm font-medium mt-1">Streak Badges</p>
-            <p className="text-2xl font-bold">1</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <span className="text-3xl">📏</span>
-            <p className="text-sm font-medium mt-1">Distance Badges</p>
-            <p className="text-2xl font-bold">2</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <span className="text-3xl">🌞</span>
-            <p className="text-sm font-medium mt-1">Weather Badges</p>
-            <p className="text-2xl font-bold">1</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Tabs defaultValue="all" className="space-y-6">
-        <TabsList>
-          {categories.map((cat) => (
-            <TabsTrigger key={cat} value={cat} className="capitalize">
-              {cat === "heartRate" ? "Heart Rate" : cat}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
-        {categories.map((category) => (
-          <TabsContent key={category} value={category} className="space-y-6">
-            {/* Unlocked */}
-            <div>
-              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Trophy className="h-5 w-5 text-yellow-500" />
-                Unlocked
-              </h2>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {unlocked
-                  .filter((a) => category === "all" || a.category === category)
-                  .map((achievement) => (
-                    <Card
-                      key={achievement.id}
-                      className={`cursor-pointer hover:shadow-md transition-all border-2 ${tierColors[achievement.tier]}`}
-                      onClick={() => setSelectedAchievement(achievement)}
-                    >
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-3">
-                          <span className="text-3xl">{achievement.icon}</span>
-                          <div className="flex-1">
-                            <h3 className="font-semibold">{achievement.title}</h3>
-                            <p className="text-xs text-muted-foreground">{achievement.description}</p>
-                            <div className="flex items-center gap-2 mt-2">
-                              <Badge variant={tierBadgeColors[achievement.tier]} className="capitalize">
-                                {achievement.tier}
-                              </Badge>
-                              <span className="text-xs text-muted-foreground">
-                                {achievement.dateUnlocked && new Date(achievement.dateUnlocked).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-              </div>
+    <div className="fitness-page">
+      <PageHeader
+        title="Look how far you’ve come"
+        description="Real milestones, earned through your recorded activities."
+        eyebrow="PROGRESS / MILESTONES"
+      />
+      <div className="stats-grid three">
+        {[
+          [
+            "Milestones reached",
+            `${milestones.filter((m) => m.current >= m.target).length} / ${milestones.length}`,
+          ],
+          [
+            "Longest recorded run",
+            s.longest ? `${s.longest.toFixed(2)} km` : "Not recorded",
+          ],
+          [
+            "Fastest average running pace",
+            s.best ? `${formatPace(s.best)} min/km` : "Not recorded",
+          ],
+        ].map(([l, v]) => (
+          <div className="stat-card" key={l}>
+            <p className="stat-label">{l}</p>
+            <div className="stat-value" style={{ fontSize: 25 }}>
+              {v}
             </div>
-
-            {/* In Progress */}
-            <div>
-              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Lock className="h-5 w-5 text-muted-foreground" />
-                In Progress
-              </h2>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {inProgress
-                  .filter((a) => category === "all" || a.category === category)
-                  .map((achievement) => (
-                    <Card
-                      key={achievement.id}
-                      className="cursor-pointer hover:shadow-md transition-all opacity-80"
-                      onClick={() => setSelectedAchievement(achievement)}
-                    >
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-3">
-                          <span className="text-3xl grayscale">{achievement.icon}</span>
-                          <div className="flex-1">
-                            <h3 className="font-semibold">{achievement.title}</h3>
-                            <p className="text-xs text-muted-foreground">{achievement.description}</p>
-                            <div className="mt-2 space-y-1">
-                              <div className="flex justify-between text-xs">
-                                <span>{achievement.current} / {achievement.target}</span>
-                                <span>{achievement.progress}%</span>
-                              </div>
-                              <Progress value={achievement.progress || 0} className="h-2" />
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-              </div>
-            </div>
-          </TabsContent>
-        ))}
-      </Tabs>
-
-      {/* Achievement Detail Slider */}
-      {selectedAchievement && (
-        <DetailSlider
-          open={!!selectedAchievement}
-          onOpenChange={(open) => !open && setSelectedAchievement(null)}
-          title={`${selectedAchievement.icon} ${selectedAchievement.title}`}
-          subtitle={selectedAchievement.description}
-          badges={[
-            { label: selectedAchievement.tier, variant: tierBadgeColors[selectedAchievement.tier] },
-            { label: selectedAchievement.category },
-            selectedAchievement.dateUnlocked
-              ? { label: "Unlocked", variant: "success" as const }
-              : { label: "In Progress", variant: "secondary" as const },
-          ]}
-          fields={[
-            { label: "Category", value: selectedAchievement.category },
-            { label: "Tier", value: selectedAchievement.tier },
-            { label: "Progress", value: `${selectedAchievement.progress}%` },
-            { label: "Current", value: `${selectedAchievement.current}` },
-            { label: "Target", value: `${selectedAchievement.target}` },
-            ...(selectedAchievement.dateUnlocked
-              ? [{ label: "Unlocked On", value: new Date(selectedAchievement.dateUnlocked).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }) }]
-              : []),
-          ]}
-        >
-          <div>
-            <h4 className="text-sm font-medium mb-2">Progress</h4>
-            <Progress value={selectedAchievement.progress || 0} className="h-3" />
-            <p className="text-xs text-muted-foreground mt-2 text-center">
-              {selectedAchievement.current} / {selectedAchievement.target} ({selectedAchievement.progress}%)
-            </p>
           </div>
-        </DetailSlider>
-      )}
+        ))}
+      </div>
+      <div className="two-columns">
+        {milestones.map((m) => (
+          <Panel
+            key={m.title}
+            title={m.title}
+            subtitle={m.description}
+            action={
+              m.current >= m.target ? (
+                <Check className="text-primary" size={20} />
+              ) : (
+                <Trophy className="muted" size={20} />
+              )
+            }
+          >
+            <progress
+              aria-label={`${m.title} progress`}
+              value={Math.min(100, (m.current / m.target) * 100)}
+              max={100}
+            />
+            <p className="text-sm muted">
+              {m.current >= m.target
+                ? "Achieved"
+                : `${m.current.toFixed(m.unit === "km" ? 1 : 0)} / ${m.target} ${m.unit}`}
+            </p>
+          </Panel>
+        ))}
+      </div>
+      <p className="data-note">
+        Personal best pace is the average pace of an entire running workout, not
+        a measured 5K or 10K split. Milestones update if a workout is edited or
+        removed.
+      </p>
     </div>
   );
 }

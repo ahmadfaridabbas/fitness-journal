@@ -18,12 +18,18 @@ export function RouteMap({
   coordinates,
   width = 400,
   height = 300,
-  strokeColor = "#3b82f6",
+  strokeColor = "#4c9b89",
   className = "",
 }: RouteMapProps) {
-  if (!coordinates || coordinates.length < 2) {
+  coordinates = (coordinates || []).filter(
+    (c) => Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]),
+  );
+  if (coordinates.length < 2) {
     return (
-      <div className={`flex items-center justify-center bg-muted rounded-lg ${className}`} style={{ width, height }}>
+      <div
+        className={`flex items-center justify-center bg-muted rounded-lg ${className}`}
+        style={{ maxWidth: "100%", width, height }}
+      >
         <p className="text-sm text-muted-foreground">No route data</p>
       </div>
     );
@@ -61,6 +67,9 @@ export function RouteMap({
 
   return (
     <svg
+      role="img"
+      aria-label="Recorded GPS route shape; not a street map"
+      style={{ maxWidth: "100%", height: "auto" }}
       width={width}
       height={height}
       className={`bg-muted/30 rounded-lg ${className}`}
@@ -77,9 +86,23 @@ export function RouteMap({
         opacity="0.8"
       />
       {/* Start marker */}
-      <circle cx={start[0]} cy={start[1]} r="5" fill="#22c55e" stroke="white" strokeWidth="2" />
+      <circle
+        cx={start[0]}
+        cy={start[1]}
+        r="5"
+        fill="#22c55e"
+        stroke="white"
+        strokeWidth="2"
+      />
       {/* End marker */}
-      <circle cx={end[0]} cy={end[1]} r="5" fill="#ef4444" stroke="white" strokeWidth="2" />
+      <circle
+        cx={end[0]}
+        cy={end[1]}
+        r="5"
+        fill="#ef4444"
+        stroke="white"
+        strokeWidth="2"
+      />
     </svg>
   );
 }

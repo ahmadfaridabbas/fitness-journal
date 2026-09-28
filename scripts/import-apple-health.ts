@@ -104,7 +104,7 @@ function parseGpxFile(filePath: string): ParsedRun | null {
       min: Math.round(minElev),
       max: Math.round(maxElev),
     },
-    calories: estimateCalories(distance, duration),
+    calories: estimateCalories(distance),
     routeData: {
       type: "LineString",
       coordinates: simplified.map((p) => [p.lng, p.lat, p.elevation]),
@@ -129,7 +129,7 @@ function toRad(deg: number): number {
   return deg * (Math.PI / 180);
 }
 
-function estimateCalories(distanceKm: number, durationMin: number): number {
+function estimateCalories(distanceKm: number): number {
   // Rough estimate: ~70 cal per km for a 70kg runner
   return Math.round(distanceKm * 70);
 }

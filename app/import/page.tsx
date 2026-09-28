@@ -1,258 +1,207 @@
 "use client";
-
-import React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
+import { Upload, CheckCircle2, FileUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Upload, FileText, CheckCircle, AlertCircle, Heart, MapPin, Timer, Loader2 } from "lucide-react";
-
-interface ImportedRun {
-  id: string;
-  date: string;
-  distance: number;
-  duration: number;
-  pace: number;
-  avgHeartRate: number | null;
-  calories: number;
-  hasRoute: boolean;
-  routePoints: number;
-  trainingLoad: string;
-}
-
-interface ImportResult {
-  success: boolean;
-  imported: number;
-  runs: ImportedRun[];
-  errors?: string[];
-}
-
+import { useFitness } from "@/components/fitness/provider";
+import { PageHeader, Panel } from "@/components/fitness/ui";
+import { normalizeImportedRun } from "@/lib/data/real-runs";
+import { selectHealthExport } from "@/lib/apple-health/select-files";
+import { importInBrowser } from "@/lib/apple-health/import-browser";
+import type { ImportProgress } from "@/lib/apple-health/import-files";
 export default function ImportPage() {
-  const [file, setFile] = React.useState<File | null>(null);
-  const [dragOver, setDragOver] = React.useState(false);
-  const [loading, setLoading] = React.useState(false);
-  const [result, setResult] = React.useState<ImportResult | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const handleDrop = (e: React.DragEvent) => {
+  const operation = useRef<AbortController | null>(null);
+  const [progress, setProgress] = useState<ImportProgress>({
+    percent: 0,
+    message: "",
+  });
+  useEffect(() => () => operation.current?.abort(), []);
+  const { importWorkouts } = useFitness();
+  const [xml, setXml] = useState<File | null>(null),
+    [gpx, setGpx] = useState<File[]>([]),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [done, setDone] = useState<number | null>(null);
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setDragOver(false);
-    const dropped = e.dataTransfer.files[0];
-    if (dropped && dropped.name.endsWith(".xml")) {
-      setFile(dropped);
-      setError(null);
-    } else {
-      setError("Please drop an XML file.");
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = e.target.files?.[0];
-    if (selected) {
-      setFile(selected);
-      setError(null);
-    }
-  };
-
-  const handleUpload = async () => {
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    setResult(null);
-
+    if (!xml || operation.current) return;
+    setBusy(true);
+    setError("");
+    setDone(null);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const response = await fetch("/api/import/apple-health", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.error || "Import failed.");
-      } else {
-        setResult(data);
-      }
-    } catch {
-      setError("Network error. Please try again.");
+      const controller = new AbortController();
+      operation.current = controller;
+      const runs = await importInBrowser(
+        xml,
+        gpx,
+        setProgress,
+        controller.signal,
+      );
+      const rows = runs.map(
+        (r: Parameters<typeof normalizeImportedRun>[0], i: number) =>
+          normalizeImportedRun(r, `health_${r.startTime}_${i}`),
+      );
+      if (!importWorkouts(rows))
+        throw new Error(
+          "Could not save imported workouts. Your existing data is unchanged. Try fewer workouts or free browser storage after exporting a backup.",
+        );
+      setDone(rows.length);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Import failed. Please try again.",
+      );
     } finally {
-      setLoading(false);
+      operation.current = null;
+      setBusy(false);
     }
-  };
-
-  const formatPace = (pace: number) => {
-    const min = Math.floor(pace);
-    const sec = Math.round((pace - min) * 60);
-    return `${min}:${sec.toString().padStart(2, "0")} /km`;
-  };
-
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  };
-
+  }
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-          <Upload className="h-8 w-8 text-primary" />
-          Import from Apple Health
-        </h1>
-        <p className="text-muted-foreground mt-1">
-          Upload your Apple Health export.xml to import all your running data automatically.
-        </p>
-      </div>
-
-      {/* Instructions */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">How to export from Apple Health</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p>1. Open the <strong>Health</strong> app on your iPhone</p>
-          <p>2. Tap your profile picture in the top right</p>
-          <p>3. Scroll down and tap <strong>Export All Health Data</strong></p>
-          <p>4. Wait for the export to complete and save the ZIP file</p>
-          <p>5. Extract the ZIP and upload the <strong>export.xml</strong> file below</p>
-        </CardContent>
-      </Card>
-
-      {/* Upload Area */}
-      <Card>
-        <CardContent className="p-6">
-          <div
-            className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
-              dragOver
-                ? "border-primary bg-primary/5"
-                : file
-                ? "border-green-500 bg-green-500/5"
-                : "border-muted-foreground/25 hover:border-muted-foreground/50"
-            }`}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={handleDrop}
-          >
-            {file ? (
-              <div className="space-y-2">
-                <FileText className="h-12 w-12 mx-auto text-green-500" />
-                <p className="font-medium">{file.name}</p>
-                <p className="text-sm text-muted-foreground">
-                  {(file.size / (1024 * 1024)).toFixed(1)} MB
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <Upload className="h-12 w-12 mx-auto text-muted-foreground" />
-                <p className="font-medium">Drop your export.xml here</p>
-                <p className="text-sm text-muted-foreground">or click to browse</p>
-              </div>
-            )}
-            <input
-              type="file"
-              accept=".xml"
-              onChange={handleFileChange}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              style={{ position: "absolute" }}
-            />
-          </div>
-
-          {/* Error */}
-          {error && (
-            <div className="mt-4 flex items-center gap-2 text-red-500 text-sm">
-              <AlertCircle className="h-4 w-4" />
-              {error}
+    <div className="fitness-page">
+      <PageHeader
+        title="Bring your history along"
+        description="Turn your Apple Health workouts into a journal of progress."
+        eyebrow="WORKSPACE / IMPORT"
+      />
+      <div className="two-columns">
+        <Panel
+          title="Import Apple Health"
+          subtitle="Your existing records and edits are preserved"
+        >
+          <form className="fitness-form" onSubmit={submit}>
+            <div
+              className="empty-state"
+              style={{
+                minHeight: 120,
+                background: "var(--color-muted)",
+                borderRadius: 10,
+              }}
+            >
+              <FileUp size={30} />
+              <h3>Your next chapter includes your history</h3>
+              <p>
+                Select export.zip directly, choose an extracted folder, or select XML and GPS files individually.
+              </p>
             </div>
-          )}
-
-          {/* Upload Button */}
-          <div className="mt-4 flex justify-end">
-            <Button onClick={handleUpload} disabled={!file || loading}>
-              {loading ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Parsing...
-                </>
-              ) : (
-                <>
-                  <Upload className="h-4 w-4 mr-2" />
-                  Import Workouts
-                </>
-              )}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Results */}
-      {result && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <CheckCircle className="h-5 w-5 text-green-500" />
-              Successfully imported {result.imported} runs
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {result.runs.map((run) => (
-                <div
-                  key={run.id}
-                  className="flex items-center justify-between p-3 rounded-lg border bg-card"
+            <label>
+              Extracted Apple Health folder (optional)
+              <input
+                type="file"
+                {...{ webkitdirectory: "", directory: "" }}
+                multiple
+                disabled={busy}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || []);
+                  if (!files.length) return;
+                  setDone(null);
+                  setError("");
+                  try {
+                    const selected = selectHealthExport(files);
+                    setXml(selected.xml);
+                    setGpx(selected.routes);
+                  } catch (error) {
+                    setXml(null);
+                    setGpx([]);
+                    setError(error instanceof Error ? error.message : "Could not read this folder.");
+                  }
+                }}
+              />
+            </label>
+            <label>
+              Apple Health export (.zip or .xml)
+              <input
+                type="file"
+                accept=".zip,.xml"
+                disabled={busy}
+                onChange={(e) => {
+                  setXml(e.target.files?.[0] || null);
+                  setDone(null);
+                  setError("");
+                }}
+              />
+            </label>
+            <label>
+              GPS routes (.gpx, optional for XML; included automatically with ZIP)
+              <input
+                type="file"
+                accept=".gpx"
+                multiple
+                disabled={busy}
+                onChange={(e) => setGpx(Array.from(e.target.files || []))}
+              />
+            </label>
+            {xml && (
+              <p className="text-sm muted">
+                {xml.name} selected ({(xml.size / 1024 / 1024).toFixed(1)} MB)
+              </p>
+            )}
+            {gpx.length > 0 && (
+              <p className="text-sm muted">{gpx.length} route files selected</p>
+            )}
+            {busy && (
+              <div role="status" aria-live="polite">
+                <p className="text-sm muted">
+                  {progress.message} {progress.percent}%
+                </p>
+                <progress
+                  aria-label="Import progress"
+                  value={progress.percent}
+                  max={100}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => operation.current?.abort()}
                 >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">
-                        {run.distance.toFixed(2)} km
-                      </span>
-                      <Badge variant="outline" className="text-xs">
-                        {run.trainingLoad}
-                      </Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      {formatDate(run.date)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                    <span className="flex items-center gap-1">
-                      <Timer className="h-3 w-3" />
-                      {formatPace(run.pace)}
-                    </span>
-                    {run.avgHeartRate && (
-                      <span className="flex items-center gap-1">
-                        <Heart className="h-3 w-3" />
-                        {run.avgHeartRate} bpm
-                      </span>
-                    )}
-                    {run.hasRoute && (
-                      <span className="flex items-center gap-1">
-                        <MapPin className="h-3 w-3 text-green-500" />
-                        {run.routePoints} pts
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {result.errors && result.errors.length > 0 && (
-              <div className="mt-4 p-3 bg-yellow-500/10 rounded-lg">
-                <p className="text-sm font-medium text-yellow-600">
-                  {result.errors.length} warnings:
-                </p>
-                {result.errors.slice(0, 5).map((err, i) => (
-                  <p key={i} className="text-xs text-muted-foreground mt-1">{err}</p>
-                ))}
+                  Cancel import
+                </Button>
               </div>
             )}
-          </CardContent>
-        </Card>
-      )}
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
+            {done !== null && (
+              <div role="status" className="success-message">
+                <CheckCircle2 size={18} />
+                <p>
+                  {done} valid activities processed. Duplicates were skipped.
+                </p>
+                <Link className="text-link mt-2" href="/journal">
+                  View your journal →
+                </Link>
+              </div>
+            )}
+            <Button type="submit" disabled={busy || !xml}>
+              <Upload size={16} />
+              {busy ? "Processing your export…" : "Import workouts"}
+            </Button>
+          </form>
+        </Panel>
+        <Panel
+          title="A few simple steps"
+          subtitle="Export your data from the Health app"
+        >
+          <ol className="space-y-5 text-sm leading-relaxed list-decimal pl-5">
+            <li>Open Health on your iPhone and tap your profile picture.</li>
+            <li>
+              Choose “Export All Health Data” and save the ZIP to your computer.
+            </li>
+            <li>
+              Select <strong>export.zip</strong> directly. The workouts and GPS routes inside are read automatically.
+            </li>
+            <li>
+              Alternatively, extract the ZIP and choose the apple_health_export folder, or select export.xml and GPX files individually. Do not select export_cda.xml.
+            </li>
+          </ol>
+          <div className="mt-8 p-4 rounded-lg bg-muted text-xs leading-relaxed muted">
+            Your files are processed on this device in the background, without
+            uploading them. ZIP archives are opened locally and large XML exports are read in chunks. Workouts are
+            saved in this browser after processing finishes. No source files are
+            overwritten.
+          </div>
+        </Panel>
+      </div>
     </div>
   );
 }

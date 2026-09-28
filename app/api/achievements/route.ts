@@ -1,15 +1,11 @@
 import { NextResponse } from "next/server";
-import { mockAchievements } from "@/lib/mock-data";
-
-// GET /api/achievements - Get all achievements
 export async function GET() {
-  const unlocked = mockAchievements.filter((a) => a.dateUnlocked);
-  const inProgress = mockAchievements.filter((a) => !a.dateUnlocked);
-
   return NextResponse.json({
-    achievements: mockAchievements,
-    unlocked: unlocked.length,
-    inProgress: inProgress.length,
-    total: mockAchievements.length,
+    achievements: [],
+    unlocked: 0,
+    inProgress: 0,
+    total: 0,
+    storage:
+      "Milestones are calculated in the interface from bundled history and browser-saved workouts.",
   });
 }

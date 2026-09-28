@@ -8,9 +8,9 @@ interface ImportedRun {
   duration: number;
   distance: number;
   pace: number;
-  activeCalories?: number;
-  basalCalories?: number;
-  totalCalories?: number;
+  activeCalories?: number | null;
+  basalCalories?: number | null;
+  totalCalories?: number | null;
   avgHeartRate: number | null;
   maxHeartRate: number | null;
   minHeartRate?: number | null;
@@ -29,7 +29,7 @@ interface ImportedRun {
   weather: { temperature: number | null; humidity: number | null } | null;
   indoor?: boolean;
   effortScore: number | null;
-  heartRateZones?: any[] | null;
+  heartRateZones?: unknown[] | null;
   routeData: { type: string; coordinates: number[][] } | null;
   pointCount: number;
   // Legacy fields
@@ -45,23 +45,24 @@ function getTrainingLoad(pace: number, duration: number): string {
   return "easy";
 }
 
-export const realRuns = (importedData as ImportedRun[])
-  .filter((r) => r.distance > 0.5)
-  .map((run, i) => ({
-    id: `run_imported_${i}`,
+export function normalizeImportedRun(run: ImportedRun, id: string) {
+  return {
+    id,
     date: run.date,
-    distance: Math.round(run.distance * 100) / 100,
-    duration: Math.round(run.duration),
-    pace: Math.round(run.pace * 100) / 100,
+    distance: run.distance,
+    duration: run.duration,
+    workoutType: run.workoutType || "Running",
+    startTime: run.startTime,
+    pace: run.duration / run.distance,
     avgHeartRate: run.avgHeartRate,
     maxHeartRate: run.maxHeartRate,
     cadence: run.cadence,
     power: run.avgPower || run.power || null,
     elevation: run.elevation,
-    calories: run.totalCalories || run.activeCalories || run.calories || 0,
+    calories: run.totalCalories ?? run.activeCalories ?? run.calories ?? null,
     indoor: run.indoor || false,
     effort: run.effortScore,
-    notes: null,
+    notes: null as string | null,
     route: `Run on ${run.date}`,
     routeData: run.routeData,
     moodBefore: null,
@@ -71,15 +72,34 @@ export const realRuns = (importedData as ImportedRun[])
     recoveryScore: null,
     trainingLoad: getTrainingLoad(run.pace, run.duration),
     shoeId: null,
-    weather: run.weather ? {
-      temperature: run.weather.temperature,
-      humidity: run.weather.humidity,
-      windSpeed: null,
-      condition: null,
-      feelsLike: null,
-      aqi: null,
-      pressure: null,
-      sunrise: null,
-      sunset: null,
-    } : null,
-  }));
+    weather: run.weather
+      ? {
+          temperature: run.weather.temperature,
+          humidity: run.weather.humidity,
+          windSpeed: null,
+          condition: null,
+          feelsLike: null,
+          aqi: null,
+          pressure: null,
+          sunrise: null,
+          sunset: null,
+        }
+      : null,
+  };
+}
+
+let legacyIndex = 0;
+export const realRuns = (importedData as ImportedRun[])
+  .map((run, i) =>
+    normalizeImportedRun(
+      run,
+      run.distance > 0.5 ? `run_imported_${legacyIndex++}` : `run_short_${i}`,
+    ),
+  )
+  .filter(
+    (r) =>
+      Number.isFinite(r.distance) &&
+      r.distance > 0 &&
+      Number.isFinite(r.duration) &&
+      r.duration > 0,
+  );
